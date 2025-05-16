@@ -1,0 +1,3 @@
+[submodule "external/bhive"]
+	path = external/bhive
+	url = https://github.com/ithemal/bhive.git
