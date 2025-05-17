@@ -3,6 +3,7 @@ import torch
 import subprocess
 import os
 from multiprocessing import Pool, cpu_count
+import multiprocessing
 
 # Function to call the tokenizer C program
 def tokenize_block(hex_code):
@@ -49,18 +50,22 @@ save_dir = "data/"
 os.makedirs(save_dir, exist_ok=True)
 
 
-# Process BHive CSV files efficiently
-print("Processing HSW...")
-final_data = process_bhive_csv('external/bhive/benchmark/throughput/hsw.csv', start_id=1000000)
-save_path = os.path.join(save_dir, "bhive_hsw.data")
-torch.save(final_data, save_path)
 
-print("Processing IVB...")
-final_data = process_bhive_csv('external/bhive/benchmark/throughput/ivb.csv', start_id=2000000)
-save_path = os.path.join(save_dir, "bhive_ivb.data")
-torch.save(final_data, save_path)
+if __name__ == "__main__":
+    multiprocessing.set_start_method('spawn')
 
-print("Processing SKL...")
-final_data = process_bhive_csv('external/bhive/benchmark/throughput/skl.csv', start_id=3000000)
-save_path = os.path.join(save_dir, "bhive_skl.data")
-torch.save(final_data, save_path)
+    # Process BHive CSV files efficiently
+    print("Processing HSW...")
+    final_data = process_bhive_csv('external/bhive/benchmark/throughput/hsw.csv', start_id=1000000)
+    save_path = os.path.join(save_dir, "bhive_hsw.data")
+    torch.save(final_data, save_path)
+
+    print("Processing IVB...")
+    final_data = process_bhive_csv('external/bhive/benchmark/throughput/ivb.csv', start_id=2000000)
+    save_path = os.path.join(save_dir, "bhive_ivb.data")
+    torch.save(final_data, save_path)
+
+    print("Processing SKL...")
+    final_data = process_bhive_csv('external/bhive/benchmark/throughput/skl.csv', start_id=3000000)
+    save_path = os.path.join(save_dir, "bhive_skl.data")
+    torch.save(final_data, save_path)
