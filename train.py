@@ -1,3 +1,8 @@
+%env PYTORCH_ENABLE_MPS_FALLBACK = 1
+TRAIN_COMPLETE_DATASET = True # Set False to try training on a sample fo the dataset
+MICROARCHITECTURES = ["HSW", "IVB", "SKL"]
+SELECTED_MICROARCHITECTURE = MICROARCHITECTURES[2]
+
 import torch
 import re
 import os
@@ -5,11 +10,6 @@ import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-
-
-data = torch.load("data/bhive_hsw.data")
-data = [data_point for data_point in data if data_point[3] != None]
-
 
 def transform_xml(block: str):
     block = block.removeprefix("<block>").removesuffix("</block>")
@@ -24,36 +24,41 @@ def transform_xml(block: str):
     ]
     return instructions
 
+def prepare_data(data):
+    y = [data_point[1] for data_point in data if data_point[3] != None]
+    X = [transform_xml(data_point[3]) for data_point in data if data_point[3] != None]
+    valid_indices = [
+        i
+        for i, block_data in enumerate(X)
+        if block_data and any(instr for instr in block_data)
+    ]
+    X = [X[i] for i in valid_indices]
+    y = [torch.tensor([y[i]], dtype=torch.float32) for i in valid_indices]
 
-y = [data_point[1] for data_point in data]
-X = [transform_xml(data_point[3]) for data_point in data]
-valid_indices = [
-    i
-    for i, block_data in enumerate(X)
-    if block_data and any(instr for instr in block_data)
-]
-X = [X[i] for i in valid_indices]
-y = [torch.tensor([y[i]], dtype=torch.float32) for i in valid_indices]
+    if not TRAIN_COMPLETE_DATASET:
+        X = X[:10000]
+        y = y[:10000]
 
-X = X[:10000]
-y = y[:10000]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
+    instruction_set = set(
+        [word for data_point in X for instruction in data_point for word in instruction]
+    )
+    vocab_map = {"<PAD>": 0, "<UNK>": 1}
+    vocab_counter = 2
+    for word in instruction_set:
+        if word not in vocab_map:
+            vocab_map[word] = vocab_counter
+            vocab_counter += 1
+    VOCAB_SIZE = len(vocab_map)
+    PADDING_IDX = vocab_map["<PAD>"]
+
+    return X_train, X_test, y_train, y_test, vocab_map, VOCAB_SIZE, PADDING_IDX
 
 
-instruction_set = set(
-    [word for data_point in X for instruction in data_point for word in instruction]
-)
-vocab_map = {"<PAD>": 0, "<UNK>": 1}
-vocab_counter = 2
-for word in instruction_set:
-    if word not in vocab_map:
-        vocab_map[word] = vocab_counter
-        vocab_counter += 1
-VOCAB_SIZE = len(vocab_map)
-PADDING_IDX = vocab_map["<PAD>"]
+data = torch.load(f"data/bhive_{SELECTED_MICROARCHITECTURE.lower()}.data")
+
+X_train, X_test, y_train, y_test, vocab_map, VOCAB_SIZE, PADDING_IDX = prepare_data(data)
 
 
 def token_str_to_id(tokens_list, local_vocab_map):
@@ -61,7 +66,6 @@ def token_str_to_id(tokens_list, local_vocab_map):
         [local_vocab_map.get(token, local_vocab_map["<UNK>"]) for token in tokens_list],
         dtype=torch.long,
     )
-
 
 class InstructionDataset(Dataset):
     def __init__(self, features, labels):
@@ -73,11 +77,6 @@ class InstructionDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.features[idx], self.labels[idx]
-
-
-train_dataset = InstructionDataset(X_train, y_train)
-test_dataset = InstructionDataset(X_test, y_test)
-
 
 def collate_fn(batch):
     block_token_lists_batch = [item[0] for item in batch]
@@ -119,6 +118,8 @@ def collate_fn(batch):
         actual_token_counts,
     )
 
+train_dataset = InstructionDataset(X_train, y_train)
+test_dataset = InstructionDataset(X_test, y_test)
 
 class Ithemal(nn.Module):
     def __init__(self, vocab_size, embedding_size, hidden_size, padding_idx_val=0):
@@ -180,7 +181,6 @@ class Ithemal(nn.Module):
         output = self.linear(block_repr_batched)
         return output
 
-
 class MAPE_Loss(nn.Module):
     def __init__(self, epsilon=1e-8):
         super(MAPE_Loss, self).__init__()
@@ -198,21 +198,21 @@ class MAPE_Loss(nn.Module):
         mape = torch.mean(absolute_percentage_error) * 100
         return mape
 
-
 def select_device():
     if torch.cuda.is_available():
         return "cuda"
     elif torch.backends.mps.is_available():
-        return "mps"
+        return "cpu" # mps fails. I don't know why
     else:
         return "cpu"
 
 
-EMBEDDING_SIZE = 64
+EMBEDDING_SIZE = 256
 BATCH_SIZE = 32
-HIDDEN_SIZE = 128
+HIDDEN_SIZE = 256
 LEARNING_RATE = 1e-3
-EPOCHS = 5
+EPOCHS = 10
+
 
 device = select_device()
 print(f"Using device: {device}")
@@ -235,6 +235,8 @@ test_loader = DataLoader(
     shuffle=False,
     drop_last=True,
 )
+
+
 
 print(f"Starting batched training with batch_size = {BATCH_SIZE}...")
 for epoch in range(EPOCHS):
@@ -308,3 +310,160 @@ for epoch in range(EPOCHS):
     print(f"\rEpoch {epoch+1} Average Test Loss: {avg_test_loss:.4f}              ")
 
 print("\nTraining finished.")
+
+model_save_dir = "models/"
+model_filename = f"final_ithemal_model_{SELECTED_MICROARCHITECTURE.lower()}.pth"
+model_save_path = os.path.join(model_save_dir, model_filename)
+
+os.makedirs(model_save_dir, exist_ok=True)
+torch.save(model.state_dict(), model_save_path)
+print(f"Final model saved to {model_save_path}")
+
+
+
+
+# Below is for testing model accuracy
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+
+
+# Begin Generating Test Predictions
+
+# %%
+all_predictions = []
+all_targets = []
+
+with torch.no_grad():
+        for i, (
+            batched_block_ids,
+            batched_targets,
+            actual_instr_counts,
+            actual_token_counts,
+        ) in enumerate(test_loader):
+            batched_block_ids = batched_block_ids.to(device)
+            batched_targets = batched_targets.to(device)
+
+            predictions = model(
+                batched_block_ids, actual_instr_counts, actual_token_counts
+            )
+            
+            all_predictions.extend(predictions.cpu().numpy())
+            all_targets.extend(batched_targets.cpu().numpy())
+
+            print(f"\rPredicting: Batch {i+1}/{len(test_loader)}", end="")
+        print("\nPredictions completed.")
+
+y_actual = np.array(all_targets).flatten()
+y_pred = np.array(all_predictions).flatten()
+
+
+# Compute APE, PE, SAPE
+def compute_metrics(actual, predicted):
+    APE = np.abs(predicted - actual) / np.abs(actual) * 100
+    PE = (predicted - actual) / actual * 100
+    SAPE = np.abs(predicted - actual) / ((np.abs(predicted) + np.abs(actual)) / 2) * 100
+    return APE, PE, SAPE
+
+APE, PE, SAPE = compute_metrics(y_actual, y_pred)
+
+# Create DataFrame for easier analysis
+df = pd.DataFrame({
+    "Microarchitecture": [SELECTED_MICROARCHITECTURE] * len(APE),
+    "APE": APE,
+    "PE": PE,
+    "SAPE": SAPE
+})
+
+median_ape = np.median(APE)
+median_pe = np.median(PE)
+median_sape = np.median(SAPE)
+
+skew_ape = pd.Series(APE).skew()
+skew_pe = pd.Series(PE).skew()
+skew_sape = pd.Series(SAPE).skew()
+
+summary_stats = df.describe()
+extra_stats = pd.DataFrame({
+    "APE": [median_ape, skew_ape],
+    "PE": [median_pe, skew_pe],
+    "SAPE": [median_sape, skew_sape]
+}, index=["median", "skew"])
+
+summary_stats = pd.concat([summary_stats, extra_stats])
+
+
+os.makedirs("models/evaluation/", exist_ok=True)
+np.savetxt(f"models/evaluation/{SELECTED_MICROARCHITECTURE}_APE.csv", APE, delimiter=",", fmt="%f")
+np.savetxt(f"models/evaluation/{SELECTED_MICROARCHITECTURE}_PE.csv", PE, delimiter=",", fmt="%f")
+np.savetxt(f"models/evaluation/{SELECTED_MICROARCHITECTURE}_SAPE.csv", SAPE, delimiter=",", fmt="%f")
+summary_stats.to_csv(f"models/evaluation/summary_statistics_{SELECTED_MICROARCHITECTURE.lower()}.csv")
+print("Statistics saved to models/evaluation/")
+
+print(f"Summary Statistics for {SELECTED_MICROARCHITECTURE}:")
+print(summary_stats)
+
+
+# ### Generate visualizations
+# Make sure to run the evaluations for all microarchitectures before generating visualizations
+
+# Load CSV files
+PE_HSW = np.loadtxt(f"models/evaluation/{MICROARCHITECTURES[0]}_PE.csv", delimiter=",")
+PE_IVB = np.loadtxt(f"models/evaluation/{MICROARCHITECTURES[1]}_PE.csv", delimiter=",")
+PE_SKL = np.loadtxt(f"models/evaluation/{MICROARCHITECTURES[2]}_PE.csv", delimiter=",")
+
+
+df = pd.DataFrame({
+    "Microarchitecture": ["HSW"] * len(PE_HSW) + ["IVB"] * len(PE_IVB) + ["SKL"] * len(PE_SKL),
+    "Signed Percentage Error": np.concatenate([PE_HSW, PE_IVB, PE_SKL])
+})
+
+# Generate Box-and-Whisker Plot
+plt.figure(figsize=(10, 6))
+sns.boxplot(x="Microarchitecture", y="Signed Percentage Error", data=df, showfliers=False, width=0.5)
+plt.title("Box-and-Whisker Plot of Signed Percentage Errors by Microarchitecture")
+plt.ylim(-25, 20)
+increment = 5
+for y in np.arange(-25, 20 + increment, increment):
+    plt.axhline(y=y, color="gray", linestyle="-", alpha=0.5, zorder=0)
+
+plt.ylabel("Signed Percentage Error (%)")
+plt.xlabel("Microarchitecture")
+plt.show()
+
+
+
+PE_HSW_arcsinh = np.arcsinh(PE_HSW)
+PE_IVB_arcsinh = np.arcsinh(PE_IVB)
+PE_SKL_arcsinh = np.arcsinh(PE_SKL)
+
+
+plt.figure(figsize=(8, 5))
+sns.histplot(PE_HSW_arcsinh, bins=50, kde=True, color="blue")
+plt.title("Arcsinh(Signed Percentage Error) Histogram for Haswell Throughput Predictions")
+plt.xlabel("Arcsinh(Signed Percentage Error)")
+plt.ylabel("Frequency")
+plt.show()
+
+
+
+plt.figure(figsize=(8, 5))
+sns.histplot(PE_IVB_arcsinh, bins=50, kde=True, color="blue")
+plt.title("Arcsinh(Signed Percentage Error) Histogram for Ivy Bridge Throughput Predictions")
+plt.xlabel("Arcsinh(Signed Percentage Error)")
+plt.ylabel("Frequency")
+plt.show()
+
+
+plt.figure(figsize=(8, 5))
+sns.histplot(PE_SKL_arcsinh, bins=50, kde=True, color="blue")
+plt.title("Arcsinh(Signed Percentage Error) Histogram for Skylake Throughput Predictions")
+plt.xlabel("Arcsinh(Signed Percentage Error)")
+plt.ylabel("Frequency")
+plt.show()
+
+
