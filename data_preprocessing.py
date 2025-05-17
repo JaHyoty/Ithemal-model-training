@@ -1,6 +1,7 @@
 import pandas as pd
 import torch
 import subprocess
+import os
 from multiprocessing import Pool, cpu_count
 
 # Function to call the tokenizer C program
@@ -44,15 +45,22 @@ def process_bhive_csv(file_path, start_id=1400000):
 
     return results
 
+save_dir = "data/"
+os.makedirs(save_dir, exist_ok=True)
+
+
 # Process BHive CSV files efficiently
 print("Processing HSW...")
 final_data = process_bhive_csv('external/bhive/benchmark/throughput/hsw.csv', start_id=1000000)
-torch.save(final_data, 'bhive_hsw.data')
+save_path = os.path.join(save_dir, "bhive_hsw.data")
+torch.save(final_data, save_path)
 
 print("Processing IVB...")
 final_data = process_bhive_csv('external/bhive/benchmark/throughput/ivb.csv', start_id=2000000)
-torch.save(final_data, 'bhive_ivb.data')
+save_path = os.path.join(save_dir, "bhive_ivb.data")
+torch.save(final_data, save_path)
 
 print("Processing SKL...")
 final_data = process_bhive_csv('external/bhive/benchmark/throughput/skl.csv', start_id=3000000)
-torch.save(final_data, 'bhive_skl.data')
+save_path = os.path.join(save_dir, "bhive_skl.data")
+torch.save(final_data, save_path)
