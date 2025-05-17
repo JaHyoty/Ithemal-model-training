@@ -1,15 +1,30 @@
-%env PYTORCH_ENABLE_MPS_FALLBACK = 1
-TRAIN_COMPLETE_DATASET = True # Set False to try training on a sample fo the dataset
-MICROARCHITECTURES = ["HSW", "IVB", "SKL"]
-SELECTED_MICROARCHITECTURE = MICROARCHITECTURES[2]
-
 import torch
 import re
 import os
 import torch.nn as nn
+import argparse
+import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+TRAIN_COMPLETE_DATASET = True # Set False to try training on a sample fo the dataset
+MICROARCHITECTURES = ["HSW", "IVB", "SKL"]
+SELECTED_MICROARCHITECTURE = MICROARCHITECTURES[2]
+
+
+parser = argparse.ArgumentParser(description="Train model with user-selected microarchitecture and dataset setting.")
+parser.add_argument("--arch", choices=MICROARCHITECTURES, required=True, help="Choose a microarchitecture to train: HSW, IVB, or SKL")
+parser.add_argument("--full_dataset", action="store_true", default=False, help="Set this flag to train on the complete dataset")
+
+# Parse arguments
+args = parser.parse_args()
+SELECTED_MICROARCHITECTURE = args.arch
+TRAIN_COMPLETE_DATASET = args.full_dataset
+
+print(f"Training model on {SELECTED_MICROARCHITECTURE} microarchitecture...")
+print(f"Complete dataset training: {'Enabled' if TRAIN_COMPLETE_DATASET else 'Disabled'}")
 
 def transform_xml(block: str):
     block = block.removeprefix("<block>").removesuffix("</block>")
@@ -55,9 +70,8 @@ def prepare_data(data):
 
     return X_train, X_test, y_train, y_test, vocab_map, VOCAB_SIZE, PADDING_IDX
 
-
+print(f"Loading BHive data for {SELECTED_MICROARCHITECTURE}...")
 data = torch.load(f"data/bhive_{SELECTED_MICROARCHITECTURE.lower()}.data")
-
 X_train, X_test, y_train, y_test, vocab_map, VOCAB_SIZE, PADDING_IDX = prepare_data(data)
 
 
@@ -202,7 +216,7 @@ def select_device():
     if torch.cuda.is_available():
         return "cuda"
     elif torch.backends.mps.is_available():
-        return "cpu" # mps fails. I don't know why
+        return "mps"
     else:
         return "cpu"
 
@@ -325,16 +339,7 @@ print(f"Final model saved to {model_save_path}")
 # Below is for testing model accuracy
 
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-
-
 # Begin Generating Test Predictions
-
-# %%
 all_predictions = []
 all_targets = []
 
@@ -407,63 +412,5 @@ print("Statistics saved to models/evaluation/")
 print(f"Summary Statistics for {SELECTED_MICROARCHITECTURE}:")
 print(summary_stats)
 
-
-# ### Generate visualizations
-# Make sure to run the evaluations for all microarchitectures before generating visualizations
-
-# Load CSV files
-PE_HSW = np.loadtxt(f"models/evaluation/{MICROARCHITECTURES[0]}_PE.csv", delimiter=",")
-PE_IVB = np.loadtxt(f"models/evaluation/{MICROARCHITECTURES[1]}_PE.csv", delimiter=",")
-PE_SKL = np.loadtxt(f"models/evaluation/{MICROARCHITECTURES[2]}_PE.csv", delimiter=",")
-
-
-df = pd.DataFrame({
-    "Microarchitecture": ["HSW"] * len(PE_HSW) + ["IVB"] * len(PE_IVB) + ["SKL"] * len(PE_SKL),
-    "Signed Percentage Error": np.concatenate([PE_HSW, PE_IVB, PE_SKL])
-})
-
-# Generate Box-and-Whisker Plot
-plt.figure(figsize=(10, 6))
-sns.boxplot(x="Microarchitecture", y="Signed Percentage Error", data=df, showfliers=False, width=0.5)
-plt.title("Box-and-Whisker Plot of Signed Percentage Errors by Microarchitecture")
-plt.ylim(-25, 20)
-increment = 5
-for y in np.arange(-25, 20 + increment, increment):
-    plt.axhline(y=y, color="gray", linestyle="-", alpha=0.5, zorder=0)
-
-plt.ylabel("Signed Percentage Error (%)")
-plt.xlabel("Microarchitecture")
-plt.show()
-
-
-
-PE_HSW_arcsinh = np.arcsinh(PE_HSW)
-PE_IVB_arcsinh = np.arcsinh(PE_IVB)
-PE_SKL_arcsinh = np.arcsinh(PE_SKL)
-
-
-plt.figure(figsize=(8, 5))
-sns.histplot(PE_HSW_arcsinh, bins=50, kde=True, color="blue")
-plt.title("Arcsinh(Signed Percentage Error) Histogram for Haswell Throughput Predictions")
-plt.xlabel("Arcsinh(Signed Percentage Error)")
-plt.ylabel("Frequency")
-plt.show()
-
-
-
-plt.figure(figsize=(8, 5))
-sns.histplot(PE_IVB_arcsinh, bins=50, kde=True, color="blue")
-plt.title("Arcsinh(Signed Percentage Error) Histogram for Ivy Bridge Throughput Predictions")
-plt.xlabel("Arcsinh(Signed Percentage Error)")
-plt.ylabel("Frequency")
-plt.show()
-
-
-plt.figure(figsize=(8, 5))
-sns.histplot(PE_SKL_arcsinh, bins=50, kde=True, color="blue")
-plt.title("Arcsinh(Signed Percentage Error) Histogram for Skylake Throughput Predictions")
-plt.xlabel("Arcsinh(Signed Percentage Error)")
-plt.ylabel("Frequency")
-plt.show()
 
 

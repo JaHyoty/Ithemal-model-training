@@ -45,11 +45,14 @@ def process_bhive_csv(file_path, start_id=1400000):
     return results
 
 # Process BHive CSV files efficiently
+print("Processing HSW...")
 final_data = process_bhive_csv('external/bhive/benchmark/throughput/hsw.csv', start_id=1000000)
 torch.save(final_data, 'bhive_hsw.data')
 
+print("Processing IVB...")
 final_data = process_bhive_csv('external/bhive/benchmark/throughput/ivb.csv', start_id=2000000)
 torch.save(final_data, 'bhive_ivb.data')
 
+print("Processing SKL...")
 final_data = process_bhive_csv('external/bhive/benchmark/throughput/skl.csv', start_id=3000000)
 torch.save(final_data, 'bhive_skl.data')
